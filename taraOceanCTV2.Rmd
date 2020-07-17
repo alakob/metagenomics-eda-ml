@@ -1,0 +1,1394 @@
+---
+title: "Exploratory analysis of EBI-Metagenomic portal contingency tables"
+output:
+  pdf_document:
+    fig_crop: no
+    fig_height: 8
+    fig_width: 11
+  number_sections: yes
+  toc: yes
+  fontsize: 10pt
+  html_document: default
+  word_document: default
+header-includes:
+    - \usepackage{wallpaper}
+---
+\LRCornerWallPaper{0.4}{logo2.png}
+_Blaise Alako_  
+
+__First dataset:Tara Ocean dataset:__
+
+
+**Loading of R packages**  
+```{r}
+suppressWarnings(suppressMessages(library('maps')))
+suppressWarnings(suppressMessages(require(stringr)))      # String format
+suppressWarnings(suppressMessages(require(ade4)))         # Multivariate analysis
+suppressWarnings(suppressMessages(require(ggplot2)))      # Fancy plotting
+suppressWarnings(suppressMessages(require(grid)))         # Has the viewport function
+suppressWarnings(suppressMessages(require(dplyr)))        # Data manipulation
+suppressWarnings(suppressMessages(require(tidyr)))        # Data manipulation
+suppressWarnings(suppressMessages(require(FactoMineR)))   # Multivariate analysis
+suppressWarnings(suppressMessages(require(factoextra)))   # Visualize result of
+suppressWarnings(suppressMessages(require(XML)))
+suppressWarnings(suppressMessages(require(RCurl)))
+                                                          # multivariate analysis
+suppressWarnings(suppressMessages(require(ggalt)))    # 
+#devtools::install_github("hrbrmstr/ggalt")
+suppressWarnings(suppressMessages(require(ggthemes))) # theme_map and tableau colors
+
+ 
+```
+**Obtain input data for analysis**
+```{r}
+# Get the analysis summary file
+ERP001736 <- "https://www.ebi.ac.uk/metagenomics/projects/ERP001736/download/2.0/export?contentType=text&exportValue=taxonomy_abundances"
+ERP001736.meta <- "https://www.ebi.ac.uk/metagenomics/projects/ERP001736/overview/doExport";
+taraOcean <- tbl_df(read.delim(file=ERP001736))
+meta <-  tbl_df(read.csv(file=ERP001736.meta))
+
+
+```
+
+
+**Preprocess the data**
+```{r}
+# Retain only lineages with full species name
+taraOcean <- taraOcean %>% 
+              rename(taxonomy=X.SampleID) %>%
+                #mutate(taxonomy=gsub(".*?s__","",taxonomy)) %>% 
+                mutate(taxonomy=gsub(".*?g__","",taxonomy)) %>%
+                mutate(taxonomy=gsub(";s__","_", taxonomy)) %>%
+                  filter(taxonomy !="" | taxonomy=='_' ) %>%
+                    filter(!grepl('_$', taxonomy))
+```
+
+```{r}
+# Merge counts of species in the same experimental sample
+taraOcean <- taraOcean %>% 
+                group_by(taxonomy) %>%
+                  summarize_each(funs(sum)) %>%
+                    ungroup()
+```
+
+```{r}
+# Transform the wide format data into the long format for the purpose of appending 
+# descriptive information
+taraOcean.long  <- taraOcean %>% 
+                      gather(runid, freq, ERR164407:ERR599176) %>%
+                        filter(taxonomy !="Root") %>% mutate(runid=as.factor(runid))
+
+```
+
+```{r}
+# Parse the sample description for geospatial coordinates, depth of collection, 
+# collection sea-layer, date of collection and the Run id from the metadata
+meta <- meta %>% select(Sample.Description, Run.ID, Sample.ID)
+
+#meta <- tarainfo(meta=meta)
+```
+
+```{r}
+
+getMetadataFromENA <- function (df=df){
+  sampleid=df$Sample.ID
+  sampleids = paste(sampleid, collapse=",")
+  runid=df$Run.ID
+  url <- "https://www.ebi.ac.uk/ena/data/view/" 
+  url <- paste(url,paste(sampleids, "&display=xml", sep="" ), sep="")
+  doc <- xmlParse(getURL(url))
+  tags <- sapply(getNodeSet(doc, "//SAMPLE_ATTRIBUTE/TAG"), xmlValue)
+  values <- sapply(getNodeSet(doc, "//SAMPLE_ATTRIBUTE/VALUE"), xmlValue)
+  info = data.frame(runid=runid, sampleid=sampleid, tag=tags, value=values)
+  info <- tbl_df(info)
+  info <- info %>% mutate(tag=gsub(" |-", "_", tag, perl=TRUE)) %>% mutate(tag=gsub("\\)|\\(", "", tag, perl=TRUE)) %>% spread(tag, value)
+  return(info)
+}
+
+```
+
+```{r}
+#What information was collect from the audisey. Extract the metadata from European Nucleotide Archive:
+
+metadata <- tbl_df(meta) %>% getMetadataFromENA()
+metadata %>% colnames()
+```
+
+```{r}
+
+meta.sub <- metadata %>% rename(Latitude=Latitude_Start, Longitude=Longitude_Start) %>%
+                        select(runid, sampleid, Latitude, Longitude, 
+                                Temperature, Depth , Environment_Feature)
+
+meta.sub <- meta.sub %>% mutate(Latitude            = as.numeric(as.character(Latitude)),
+                                Longitude           = as.numeric(as.character(Longitude)), 
+                                Temperature         = as.numeric(as.character(Temperature)), 
+                                Depth               = as.numeric(as.character(Depth)),
+                                Environment_Feature = gsub("\\s*\\(ENVO:.*?\\)\\s*","",Environment_Feature, perl=TRUE)) 
+
+# Append metadata to the the Tara Ocean dataset
+taraOcean.long <- left_join(taraOcean.long, meta.sub, by = c("runid" = "runid"))
+
+```
+
+```{r}
+
+world <- map_data("world")
+world <- world[world$region != "Antarctica",] # intercourse antarctica
+
+baseplot <- ggplot()
+baseplot <- baseplot + geom_map(data=world, map=world,
+                    aes(x=long, y=lat, map_id=region),
+                    color="white", fill="#7f7f7f", size=0.05, alpha=1/4)
+
+baseplot
+
+baseplot <- baseplot+ geom_point(data=meta.sub, 
+                      aes(x=Longitude, y=Latitude , color=Environment_Feature), 
+                      size=2, alpha=0.6)
+baseplot
+baseplot <- baseplot + scale_color_tableau()
+baseplot <- baseplot + coord_proj("+proj=wintri")
+baseplot <- baseplot + facet_wrap(~Environment_Feature)
+baseplot <- baseplot + theme_map()
+baseplot <- baseplot + theme(strip.background=element_blank())
+baseplot <- baseplot + theme(legend.position="none")
+baseplot
+
+
+```
+
+```{r}
+# What is the data made up of.
+
+meta.count <- meta.sub %>% group_by(Environment_Feature) %>%
+              mutate(count=n()) %>% ungroup() %>%
+              select(Environment_Feature, count)  %>% unique()
+
+meta.count %>% ggplot(aes(x=Environment_Feature, y=count)) +  geom_bar(stat='identity') + 
+                geom_text(aes(label=count))  + theme_bw() +
+                      theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+                      ggtitle("Tara Ocean Dataset")
+
+```
+
+
+```{r}
+# Transform the long format to wide format for the purpose of Mutivariate analysis
+taraOcean.wide1 <- taraOcean.long %>% select(taxonomy, runid,freq) %>%
+                    spread(runid, freq, fill=0) %>%
+                      as.data.frame()
+runs <- taraOcean.long %>% select(taxonomy, runid, freq)
+temperature <- taraOcean.long %>% select(taxonomy, runid, freq)
+```
+
+```{r}
+taraOcean.mat <- taraOcean.df %>% select(-c(1)) %>% as.matrix()
+rownames(taraOcean.mat) <- gsub("\\[|\\]","", perl=TRUE, taraOcean.df$taxonomy)
+```
+
+```{r}
+
+# Clean up the matrix
+taraOcean.mat <- taraOcean.mat[!rownames(taraOcean.mat)=="",]
+as.matrix(table(rownames(taraOcean.mat)))[as.matrix(table(rownames(taraOcean.mat)))>1,]
+todiscard <- (as.matrix(table(rownames(taraOcean.mat)) > 1))
+myselect <- names(todiscard[todiscard[,1]==TRUE,])
+taraOcean.mat<- taraOcean.mat[!rownames(taraOcean.mat) %in% myselect,]
+taraOcean.mat <- taraOcean.mat[which(rowSums(taraOcean.mat)!=0),]
+
+```
+_Is there any association between the species and the data source?_
+```{r}
+# Perform a chi-square test of independence, this evaluates whethere there is a significant
+# dependence between species and biological samples
+
+chisq <- chisq.test(taraOcean.mat)
+chisq
+# The species and biological samples are statistically significantly associated (p-value=0)
+```
+
+
+_Perform Corresspondance Anlysis, CA (a generalized from of Principal Component Analysis for categorical data)_
+```{r fig.pos="H"}
+# We use CA to reduce the dimension of the data without loosing the most important information.
+# CA is used to graphically visualize rows  points and column points in a low dimensional space
+taraOcean.ca <- CA(taraOcean.mat, graph=FALSE)
+```
+
+_Explore the content of the CA output_
+```{r}
+summary(taraOcean.ca, nb.dec = 2, nbelements = 4, ncp= 3)
+
+# The result of the function summary() contains the chi-square statistics and 3 tables:
+# Table 1- Eigenvalues, displays the variances and the percentage of vaiances retained by each 
+#         dimension.
+# Table 2, Contains the coordinates, the contribution and the cos2 (quality of representation 
+#          [0-1] of the first 10 active rows variable on the dimension 1 and 2
+# Table 3: displays the coordinates, the contribution and the cos2 of the first active column 
+#          variables on the dimension 1 and 2
+#     
+```
+_Interprete the CA result above, hint:correlation coef., chi-square statistic_
+```{r}
+# Correlation coefficient
+eig <- get_eigenvalue(taraOcean.ca)
+# Eigen values is the amount of information retained by each axis.
+trace <- sum(eig$eigenvalue)
+cor.coef <- sqrt(trace)
+cor.coef
+# As a rule of thumb a correlation above 0.2 can be considered important 
+# (Bendixen 1995, 567; Healey 2013, 289-290)
+# The correlation coef. is 1.38 in the American gut project dataset, 
+# indicating a strong association between row (species) 
+# and column(biological samples variables.). 
+# A more rigourous approach for examining the association is to use Chi-square statistics. 
+# The association is highly significant (p-value=0) 
+```
+
+```{r}
+# Explore the percentages of inertia explained by the CA dimensions, the scree plot
+fviz_screeplot(taraOcean.ca, barfill='white', addlabels=TRUE) + theme_bw()
+# The point at which the scree plot shows a bend mignt indicate an optimal dimensionality.
+```
+
+_Hierarchical Clustering of principal components_
+```{r fig.pos="H"}
+# Compute hierarchical clustering of species of CA results
+taraOcean.hcpc <- HCPC(taraOcean.ca, graph = TRUE , nb.clust=4, order=TRUE )
+```
+
+_Visualize the CA results_
+
+
+```{r fig.pos="H"}
+# Symmetric biplot, whereby both rows (blue) and columns (red) are represented
+# in the same space using the principal coordinates. Only the distance between row
+# points or the distance between column points can be reliably interpreted. 
+# With a symmetric plot, only general statements can be drawn about the pattern. 
+# The inter-distance between rows and column can not be interpreted.
+fviz_ca_biplot(taraOcean.ca, repel=TRUE, select.row = list(contrib = 95), 
+               select.col = list(contrib = 10), geom="text") +
+  theme_minimal()
+```
+
+
+_Remove labels and add cluster centers_
+```{r fig.pos="H"}
+# A 3D map of the hierarchical clustering of the principal component.
+plot(taraOcean.hcpc, choice ="3D.map", draw.tree = FALSE,
+     ind.names = FALSE, centers.plot = TRUE, 
+     title='Hierarchical clustering of the Principal Components')
+```
+_Hierarchical Clustering of principal component._
+```{r fig.pos="H"}
+# Compute hierarchical clustering of biological samples of CA results
+res.hcpc <- HCPC(taraOcean.ca, cluster.CA = "columns", graph = TRUE , nb.clust=4, order=TRUE )
+```
+
+```{r fig.pos="H"}
+# Biological sample cluster in the dataset
+fviz_cluster(res.hcpc ) + theme_bw()
+```
+
+```{r fig.pos="H"}
+# transpose the row and column in the gut data and perform
+# a new correspondance analysis
+taraOcean.ca <- CA(t(taraOcean.mat), ncp=4)
+```
+
+```{r fig.pos="H"}
+# Symmetric biplot 
+fviz_ca_biplot(taraOcean.ca, repel=TRUE, select.row = list(contrib = 12), 
+               select.col = list(contrib = 95), geom="text") +
+  theme_minimal()
+```
+_Remove labels and add cluster centers_
+```{r fig.pos="H"}
+# 3d hierarchical clustering of the principal components.
+plot(res.hcpc, choice ="3D.map", draw.tree = FALSE,
+     ind.names = FALSE, centers.plot = TRUE, title='Hierarchical clustering of the Principal Components')
+```
+
+
+\newpage
+
+
+***  
+__Second dataset: American Gut Project__  
+The American Gut project is the largest crowdsourced citizen science project to date. Fecal, oral, skin, and other body site samples collected from thousands of participants represent the largest human microbiome cohort in existence. Detailed health and lifestyle and diet data associated with each sample is enabling us to deeply examine associations between the human microbiome and factors such as diet (from vegan to near carnivore and everything in between), season, amount of sleep, and disease states such as IBD, diabetes, or autism spectrum disorder-as well as many other factors not listed here. The American Gut project also encompasses the British Gut and Australian Gut projects, widening the cohort beyond North America. As the project continues to grow, we will be able to identify significant associations that would not be possible with smaller, geographically and health/disease status-limited cohorts. 
+
+_ENA website (ERP012803)_ 
+
+***  
+
+We will explore the data generated by the study above. The data is available at:  
+https://www.ebi.ac.uk/metagenomics/projects/ERP012803 
+
+**Pre-requisite**  
+1. Create a working directory ("metagenomicWorshop") in your home directory.  
+
+**Set the working environment**  
+```{r eval=FALSE}
+setwd("/path2/metagenomicWorkshop") 
+```
+
+**Obtain input data for analysis**
+```{r}
+# Get the analysis summary file
+ERP012803 <- "https://www.ebi.ac.uk/metagenomics/projects/ERP012803/download/2.0/export?contentType=text&exportValue=taxonomy_abundances"
+ERP012803.meta <- "https://www.ebi.ac.uk/metagenomics/projects/ERP012803/overview/doExport";
+gutproject <- tbl_df(read.delim(file=ERP012803))
+meta <-  read.csv(file=ERP012803.meta)
+```
+
+**Preprocess the data**
+```{r}
+# Retain only lineages with full species name
+gutproject <- gutproject %>% 
+              rename(taxonomy=X.SampleID) %>%
+                #mutate(taxonomy=gsub(".*?s__","",taxonomy)) %>% 
+                mutate(taxonomy=gsub(".*?g__","",taxonomy)) %>%
+                mutate(taxonomy=gsub(";s__","_", taxonomy)) %>%
+                  filter(taxonomy !="" | taxonomy=='_' ) %>%
+                    filter(!grepl('_$', taxonomy))
+```
+
+```{r}
+# Merge counts of species in the same experimental sample
+gutproject <- gutproject %>% 
+                group_by(taxonomy) %>%
+                  summarize_each(funs(sum)) %>%
+                    ungroup()
+```
+
+```{r}
+# Use the species name as the rowname, this replaces the default numerical name 
+rownames(gutproject) <- gutproject$taxonomy
+```
+
+```{r}
+# Transform the wide format data into the long format for the purpose of appending 
+# descriptive information
+gutproject.long  <- gutproject %>% 
+                      gather(sampleb, freq, ERR1072624:ERR1160857) %>%
+                        filter(taxonomy !="Root")
+
+```
+
+```{r}
+# Retain only the sample description and the Run id from the metadata
+meta <- meta %>% select(Sample.Description, Run.ID)
+```
+
+```{r}
+# What is the data made up of.
+meta.strip <-  tbl_df(meta) %>% mutate(Sample.Description=gsub(" ","_",Sample.Description),
+                         Sample.Description=gsub("American_Gut_Project_","", Sample.Description), 
+                         Sample.Description=gsub("American_","", Sample.Description)
+                         )
+meta.strip <- meta.strip %>% group_by(Sample.Description) %>%
+              mutate(count=n()) %>% ungroup() %>%
+              select(Sample.Description, count)  %>% unique()
+
+meta.strip %>% ggplot(aes(x=Sample.Description, y=count)) +  geom_bar(stat='identity') + 
+                geom_text(aes(label=count))  + theme_bw() +
+                      theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+                      ggtitle("American gut project")
+
+```
+
+```{r}
+# Append metadata to the gut data
+gutproject.df <- merge(gutproject.long, meta, by.x='sampleb', by.y='Run.ID')
+gutproject.df <- tbl_df(gutproject.df)
+```
+
+```{r}
+# Clean up the description of sample
+gutproject.df <- gutproject.df %>% 
+                  mutate(Sample.Description=gsub(" ","_",Sample.Description), 
+                   Sample.Description=gsub("American_Gut_Project_","", Sample.Description),
+                   Sample.Description=gsub("American_","", Sample.Description)) %>%
+                    ungroup() 
+```
+
+```{r}
+# merge taxonomy occurence count per data source
+gutproject.df <- gutproject.df %>%
+                  group_by(Sample.Description,taxonomy) %>% 
+                    summarise(cum=sum(freq)) %>% ungroup()
+gutproject.df <- gutproject.df %>%
+                  select(taxonomy,Sample.Description,cum)
+                  #filter(Sample.Description !="Stool_sample") %>%
+                  #filter(Sample.Description !="Stool_sample" & Sample.Description !="Mouth_sample" )
+                  #filter( Sample.Description     !="Vaginal_mucus_sample" )
+```
+
+```{r}
+# Transform the long format to wide format for the purpose of Mutivariate analysis
+gutproject.df <- gutproject.df %>%
+                    spread(Sample.Description, cum, fill=0) %>%
+                      as.data.frame()
+
+```
+
+```{r}
+gutproject.mat <- gutproject.df %>% select(-c(1)) %>% as.matrix()
+rownames(gutproject.mat) <- gsub("\\[|\\]","", perl=TRUE, gutproject.df$taxonomy)
+```
+
+```{r}
+
+# Clean up the matrix
+gutproject.mat = gutproject.mat[!rownames(gutproject.mat)=="",]
+as.matrix(table(rownames(gutproject.mat)))[as.matrix(table(rownames(gutproject.mat)))>1,]
+todiscard <- (as.matrix(table(rownames(gutproject.mat)) > 1))
+myselect = names(todiscard[todiscard[,1]==TRUE,])
+gutproject.mat<- gutproject.mat[!rownames(gutproject.mat) %in% myselect,]
+gutproject.mat <- gutproject.mat[which(rowSums(gutproject.mat)!=0),]
+
+```
+_Is there any association between the species and the data source?_
+```{r}
+# Perform a chi-square test of independence, this evaluates whethere there is a significant
+# dependence between species and biological samples
+
+chisq <- chisq.test(gutproject.mat)
+chisq
+# The species and biological samples are statistically significantly associated (p-value=0)
+```
+
+
+_Perform Corresspondance Anlysis, CA (a generalized from of Principal Component Analysis for categorical data)_
+```{r fig.pos="H"}
+# We use CA to reduce the dimension of the data without loosing the most important information.
+# CA is used to graphically visualize rows  points and column points in a low dimensional space
+
+gutproject.ca <- CA(gutproject.mat, graph=FALSE)
+```
+
+_Explore the content of the CA output_
+```{r}
+summary(gutproject.ca, nb.dec = 2, nbelements = 4, ncp= 3)
+
+# The result of the function summary() contains the chi-square statistics and 3 tables:
+# Table 1- Eigenvalues, displays the variances and the percentage of vaiances retained by each 
+#         dimension.
+# Table 2, Contains the coordinates, the contribution and the cos2 (quality of representation 
+#          [0-1] of the first 10 active rows variable on the dimension 1 and 2
+# Table 3: displays the coordinates, the contribution and the cos2 of the first active column 
+#          variables on the dimension 1 and 2
+#     
+```
+_Interprete the CA result above, hint:correlation coef., chi-square statistic_
+```{r}
+# Correlation coefficient
+eig <- get_eigenvalue(gutproject.ca)
+# Eigen values is the amount of information retained by each axis.
+trace <- sum(eig$eigenvalue)
+cor.coef <- sqrt(trace)
+cor.coef
+# As a rule of thumb a correlation above 0.2 can be considered important 
+# (Bendixen 1995, 567; Healey 2013, 289-290)
+# The correlation coef. is 1.38 in the American gut project dataset, 
+# indicating a strong association between row (species) 
+# and column(biological samples variables.). 
+# A more rigourous approach for examining the association is to use Chi-square statistics. 
+# The association is highly significant (p-value=0) 
+```
+
+```{r}
+# Explore the percentages of inertia explained by the CA dimensions, the scree plot
+fviz_screeplot(gutproject.ca, barfill='white', addlabels=TRUE) + theme_bw()
+# The point at which the scree plot shows a bend mignt indicate an optimal dimensionality.
+```
+
+_Hierarchical Clustering of principal components_
+```{r fig.pos="H"}
+# Compute hierarchical clustering of species of CA results
+gutproject.hcpc <- HCPC(gutproject.ca, graph = TRUE , nb.clust=4, order=TRUE )
+```
+
+_Visualize the CA results_
+
+
+```{r fig.pos="H"}
+# Symmetric biplot, whereby both rows (blue) and columns (red) are represented
+# in the same space using the principal coordinates. Only the distance between row
+# points or the distance between column points can be reliably interpreted. 
+# With a symmetric plot, only general statements can be drawn about the pattern. 
+# The inter-distance between rows and column can not be interpreted.
+fviz_ca_biplot(gutproject.ca, repel=TRUE, select.row = list(contrib = 95), 
+               select.col = list(contrib = 10), geom="text") +
+  theme_minimal()
+```
+
+
+_Remove labels and add cluster centers_
+```{r fig.pos="H"}
+# A 3D map of the hierarchical clustering of the principal component.
+plot(gutproject.hcpc, choice ="3D.map", draw.tree = FALSE,
+     ind.names = FALSE, centers.plot = TRUE, 
+     title='Hierarchical clustering of the Principal Components')
+```
+_Hierarchical Clustering of principal component._
+```{r fig.pos="H"}
+# Compute hierarchical clustering of biological samples of CA results
+res.hcpc <- HCPC(gutproject.ca, cluster.CA = "columns", graph = TRUE , nb.clust=4, order=TRUE )
+```
+
+```{r fig.pos="H"}
+# Biological sample cluster in the dataset
+#fviz_cluster(res.hcpc ) + theme_bw()
+```
+
+```{r fig.pos="H"}
+# transpose the row and column in the gut data and perform
+# a new correspondance analysis
+gutproject.ca <- CA(t(gutproject.mat), ncp=4)
+```
+
+```{r fig.pos="H"}
+# Symmetric biplot 
+fviz_ca_biplot(gutproject.ca, repel=TRUE, select.row = list(contrib = 12), 
+               select.col = list(contrib = 95), geom="text") +
+  theme_minimal()
+```
+_Remove labels and add cluster centers_
+```{r fig.pos="H"}
+# 3d hierarchical clustering of the principal components.
+plot(res.hcpc, choice ="3D.map", draw.tree = FALSE,
+     ind.names = FALSE, centers.plot = TRUE, title='Hierarchical clustering of the Principal Components')
+```
+
+
+\newpage
+
+
+***  
+__Second dataset: Gut microbiota disturbance during antibiotic therapy: a multi-omic approach__  
+Antibiotic usage strongly affects microbial intestinal metabolism and thereby impacts human health. Understanding this process and the underlying mechanisms remains a major research goal. Accordingly, we conducted the first comparative omic investigation of gut microbial communities in faecal samples taken at multiple time points from an individual subjected to Beta-lactam therapy.  
+_Perez-Cobas AE, et al. 2013 Gut 62(11), 1591-1601_ 
+
+***  
+
+We will explore the data generated by the study above. The data is available at:  
+https://www.ebi.ac.uk/metagenomics/projects/ERP001506  
+
+```{r}
+analysis_files <- c("BP_GO_abundances","BP_GO-slim_abundances","CC_GO_abundances","CC_GO-slim_abundances","GO_abundances","GO-slim_abundances","IPR_abundances","MF_GO_abundances","MF_GO-slim_abundances","phylum_taxonomy_abundances","taxonomy_abundances")
+```
+
+Read in the different contigency tables.  
+R provides a very versatile data structure that allows us to store various data types, namely the list.  
+
+_Gather all the files with the .tsv extension_  
+```{r}
+# Read in all the contingency tables in a list making use of the lapply function
+baseanalysis = "https://www.ebi.ac.uk/metagenomics/projects/ERP001506/download/2.0/export?contentType=text&exportValue="
+metadata <- "https://www.ebi.ac.uk/metagenomics/projects/ERP001506/overview/doExport";
+filenames <- paste(baseanalysis, analysis_files, sep="")
+results <- lapply(filenames,function(i){
+  print(i)
+  read.delim(i, header=TRUE)
+})
+metadata <- tbl_df(read.csv(file=metadata))
+
+metadata <- metadata %>% 
+  filter(Release.version>1) %>%
+    mutate(Sample.Name= gsub("Human gut metagenome, |Human gut metatranscriptome \\(mRNA\\), | after antibiotics","",Sample.Name)) %>%
+      mutate(Sample.Name=  paste("days",gsub(" days", "", Sample.Name), sep="")) %>%
+        mutate(genomictype= ifelse(Experiment.type=="metatranscriptomic", "mRNA", "DNA")) %>%
+         rename(days=Sample.Name, id=Sample.ID, datatype=Experiment.type,genomictype=genomictype) %>%
+          select(days,id,datatype,genomictype) %>%
+           mutate(id=ifelse(datatype=="amplicon", paste(id, "_A", sep=""), ifelse(datatype=="metatranscriptomic", paste(id,"_T", sep=""), paste(id, "_G", sep="")))) %>%
+            mutate(datatype=str_to_title(datatype))
+
+```
+_How can we access elements in the list?_  
+```{r}
+attributes(results)
+```
+
+This approach enables us to assign a name to each entry in the list for unambiguous access to different contingency tables  
+```{r}
+colheader <- gsub(analysis_files, pattern="-", replacement ="_")
+names(results)  <- colheader
+attributes(results)
+```
+
+_Let's have a look at results object_  
+```{r}
+str(results, list.len=4)
+```
+Each entry in the list can now be accessed by name. Give each row an explicit name before manipulating the table contents with dplyr functions. The main advantage of tbl_df (return a dataframe from a dataframe) is that it only displays a few rows and all the columns fit on the current screen, with the rest of the data displayed as text. We will be making extensive use of the dplyr package, which allows operations to be chained ("%>%"); it is analogous to the linux pipe command (|), see here for more details: https://cran.rstudio.com/web/packages/dplyr/vignettes/introduction.html  
+
+# Exploring the data  
+# 1. _**Taxonomy**: who is there and in what proportion?_  
+```{r}
+ # Optimises display of the first few columns or so...
+taxonomy <- tbl_df(results$phylum_taxonomy_abundances)
+taxonomy <- taxonomy %>% mutate(phylum=as.character(phylum))
+tax_g <- taxonomy %>% 
+         select(matches("_G|um")) %>% 
+         mutate(DataType="Metagenomics")
+tax_t <- taxonomy %>% 
+         select(matches("_T|um")) %>% 
+         mutate(DataType="Metatranscriptomics") 
+tax_a <- taxonomy %>% 
+         select(matches("_A|um"))  %>%
+         mutate(DataType="Amplicon")
+
+renameSample <- function(metadata=metadata, localdf=localdf){
+  strippedcol <- colnames(localdf)
+    for (i in 1:nrow(metadata)){
+    strippedcol[which(strippedcol==as.character(metadata[i,2]))] <- as.character(metadata[i,1])
+    }
+  return(strippedcol)
+}
+
+colnames(tax_g) <- renameSample(metadata=metadata, localdf=tax_g)
+colnames(tax_t) <- renameSample(metadata=metadata, localdf=tax_t)
+colnames(tax_a) <- renameSample(metadata=metadata, localdf=tax_a)
+```
+
+_Transform a wide contingency table into a long one for the purposes of plotting._  
+```{r}
+tax_metag <- tax_g  %>% gather(condition, count, 3:ncol(tax_g)-1) %>%
+             group_by( condition) %>% 
+             mutate(prop=count/sum(count))
+ 
+tax_metat <- tax_t %>% gather(condition, count, 3:ncol(tax_t)-1) %>%
+             group_by( condition) %>%
+             mutate(prop=count/sum(count))
+```
+
+_Merge both metatranscriptomic and metagenomic relative occurrences of operational taxonomic units (OTU) per condition to visualise the community dynamic during treatment._  
+```{r}
+genomic_transcriptomics <- rbind(tax_metag, tax_metat)
+```
+
+_Bar plot of relative abundance of species_  
+
+```{r fig.pos="H"}
+genomic_transcriptomics %>% arrange(desc(prop)) %>%
+          ggplot( aes(x=condition, y=prop,fill=phylum)) + 
+          geom_bar(stat='identity', position='fill', aes(fill = phylum)) +
+          facet_grid(~DataType) +
+          ggtitle('Species abundance through treatment per datatype') +
+          ylab('proportion abundance') +
+          theme_light()  +  theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+          coord_flip()
+```
+
+_**What conclusion would you draw from this distribution?**_  
+
+***  
+
+_Heatmap of absolute Species counts per datatypes_
+
+```{r fig.pos="H"}
+genomic_transcriptomics %>% 
+            ggplot( aes(x=condition,y=phylum))+ facet_grid(~DataType) +
+  geom_tile(aes(fill=count)) + scale_fill_gradient(low="white", high="darkblue") + 
+  xlab("") + ylab("") + theme(axis.text.x=element_text(angle=45, hjust=1)) 
+```
+
+ 
+# 2. _**Function**: who does what, in what relative proportion?_  
+
+_Recall the various functional annotations in the created list_  
+
+```{r}
+attributes(results)
+```
+
+As an initial exploration, we will focus on a broad GO annotation (GO-slim)  
+
++ _**Biological processes**: relative occurrence during treatment_  
+
+```{r}
+bp_slim <- tbl_df(results$BP_GO_slim_abundances)
+bp_slim <- bp_slim %>% mutate(description=as.character(description))
+bp_slim_g <- bp_slim %>% 
+             select(matches("_G|description")) %>%
+             mutate(DataType="Metagenomics")
+bp_slim_t <- bp_slim %>% 
+             select(matches("_T|description")) %>%
+             mutate(DataType="Metatranscriptomics") 
+bp_slim_a <- bp_slim %>% 
+             select(matches("_A|description"))  %>% 
+             mutate(DataType="Amplicon")
+```
+
+_Give meaningful names to conditions, as for the taxonomic case above_  
+
+```{r}
+colnames(bp_slim_g) <- renameSample(metadata=metadata, localdf=bp_slim_g)
+colnames(bp_slim_t) <- renameSample(metadata=metadata, localdf=bp_slim_t)
+colnames(bp_slim_a) <- renameSample(metadata=metadata, localdf=bp_slim_a)
+bp_slim_metagenomics <- bp_slim_g %>%
+                        gather(condition, count, 3:ncol(bp_slim_g)-1) %>%
+                        group_by( condition) %>%
+                        mutate(prop=count/sum(count))
+
+bp_slim_metatransciptomics <- bp_slim_t %>% 
+                              gather(condition, count, 3:ncol(bp_slim_t)-1) %>%
+                              group_by( condition) %>%
+                              mutate(prop=count/sum(count))
+```
+
+Merge both metatranscriptomic and metagenomic relative occurences of biological process terms per condition to visualise the relative abundance of biological process terms that are dynamic during treatment.  
+
+```{r}
+bp_genomic_transcriptomics <- rbind(bp_slim_metagenomics, bp_slim_metatransciptomics)
+```
+
+_Bar plot of relative abundance of Biological Processes_  
+
+```{r fig.pos="H"}
+bp_genomic_transcriptomics %>% arrange(desc(prop)) %>%
+  ggplot( aes(x=condition, y=prop,fill=description)) +
+  geom_bar(stat='identity', position='fill', aes(fill = description)) +
+  facet_wrap(~DataType, ncol=1) +
+  ggtitle('Biological processess relative abundance through \n treatment per datatype') +
+  ylab('proportion abundance') +
+  theme_light()  +  theme(axis.text.x=element_text(angle=45, hjust=1)) + coord_flip() +
+  theme(legend.position="none")
+```
+
+_What can you conclude from this plot?_  
+
+*** 
+
+_Heat map of absolute biological process counts per datatype_  
+
+```{r fig.pos="H"}
+bp_genomic_transcriptomics    %>% 
+            ggplot( aes(x=condition,y=description))+ facet_grid(~DataType) +
+  geom_tile(aes(fill=count)) + scale_fill_gradient(low="white", high="darkblue") + 
+  xlab("") + ylab("") + theme(axis.text.x=element_text(angle=45, hjust=1)) 
+
+```
+
+_Heat map of biological process proportions per datatype_  
+
+```{r fig.pos="H"}
+bp_genomic_transcriptomics   %>% 
+            ggplot( aes(x=condition,y=description))+ facet_grid(~DataType) +
+  geom_tile(aes(fill=prop)) + scale_fill_gradient(low="white", high="darkblue") + 
+  xlab("") + ylab("") + theme(axis.text.x=element_text(angle=45, hjust=1)) 
+
+
+```
+
+_**Cellular Compartment**: relative occurence during treatment_ 
+```{r}
+cc_slim <- tbl_df(results$CC_GO_slim_abundances)
+cc_slim <- cc_slim %>% mutate(description=as.character(description))
+cc_slim_g <- cc_slim  %>%
+            select(matches("_G|description")) %>%
+            mutate(DataType="Metagenomics")
+cc_slim_t <- cc_slim  %>% 
+            select(matches("_T|description")) %>% 
+            mutate(DataType="Metatranscriptomics") 
+cc_slim_a <- cc_slim  %>% 
+            select(matches("_A|description"))  %>% 
+            mutate(DataType="Amplicon")
+```
+
+_Give meaningful names to conditions as for the taxonomic case above_  
+
+```{r}
+colnames(cc_slim_g) <- renameSample(metadata=metadata, localdf=cc_slim_g)
+colnames(cc_slim_t) <- renameSample(metadata=metadata, localdf=cc_slim_t)
+colnames(cc_slim_a) <- renameSample(metadata=metadata, localdf=cc_slim_a)
+```
+Calculate the relative occurrence of cellular compartments per day of treatment for both metagenomic and transcriptomic data types.  
+
+```{r}
+cc_slim_metagenomics <- cc_slim_g %>% 
+                        gather(condition, count, 3:ncol(cc_slim_g)-1) %>%
+                        group_by( condition) %>%
+                        mutate(prop=count/sum(count))
+
+cc_slim_metatransciptomics <- cc_slim_t %>% 
+                              gather(condition, count, 3:ncol(cc_slim_t)-1) %>%
+                              group_by( condition) %>% 
+                              mutate(prop=count/sum(count))
+```
+
+Merge both metatranscriptomic and metagenomic relative occurrences of biological processes per condition to visualise the relative abundance of biological process terms that are dynamic during treatment.  
+
+```{r}
+cc_genomic_transcriptomics <- rbind(cc_slim_metagenomics, cc_slim_metatransciptomics)
+```
+
+_Bar plot of relative abundances of cellular compartment_  
+
+```{r fig.pos="H"}
+cc_genomic_transcriptomics %>% arrange(desc(prop)) %>%
+            ggplot( aes(x=condition, y=prop,fill=description)) + 
+            geom_bar(stat='identity', position='fill', aes(fill = description)) +
+            facet_wrap(~DataType, ncol=1) +
+            ggtitle('Cellular compartment relative abundance through \n 
+                    treatment per datatype') + 
+                    ylab('proportion abundance') + theme_light()  + 
+                    theme(axis.text.x=element_text(angle=45, hjust=1)) +
+                    coord_flip() +  theme(legend.position="none")
+```
+
+_What can you conclude from this plot?_  
+
+***  
+
+_Heat map of absolute cellular compartment term counts per datatype_  
+
+```{r fig.pos="H"}
+cc_genomic_transcriptomics    %>% 
+            ggplot( aes(x=condition,y=description))+ facet_grid(~DataType) +
+  geom_tile(aes(fill=count)) + scale_fill_gradient(low="white", high="darkblue") + 
+  xlab("") + ylab("") + theme(axis.text.x=element_text(angle=45, hjust=1)) 
+
+```
+
+_Heat map of Cellular compartment term proportions per datatype_  
+
+```{r}
+cc_genomic_transcriptomics    %>% 
+            ggplot( aes(x=condition,y=description))+ facet_grid(~DataType) +
+  geom_tile(aes(fill=prop)) + scale_fill_gradient(low="white", high="darkblue") + 
+  xlab("") + ylab("") + theme(axis.text.x=element_text(angle=45, hjust=1)) 
+
+
+```
+
+
++ _**Molecular function**: relative occurence during treatment_  
+Extract the data from the data structure "results" created earlier.  
+```{r}
+mf_slim <- tbl_df(results$MF_GO_slim_abundances)
+mf_slim <- mf_slim %>% mutate(description=as.character(description))
+```
+
+A small function to automate extraction of count per datatype (metagenomic, metatranscriptomic, Amplicon)  
+```{r}
+separateDataType <- function (mydf = mydf, metadata=metadata){
+  mydf_g <- mydf  %>% 
+            select(matches("_G|description")) %>% 
+            mutate(DataType="Metagenomics")
+  mydf_t <- mydf  %>% 
+            select(matches("_T|description")) %>% 
+            mutate(DataType="Metatranscriptomics") 
+  mydf_a <- mydf  %>% 
+            select(matches("_A|description"))  %>% 
+            mutate(DataType="Amplicon")
+  #Give meaningful names to conditions as for the taxonomic case above
+  colnames(mydf_g) <- renameSample(metadata=metadata, localdf=mydf_g)
+  colnames(mydf_t) <- renameSample(metadata=metadata, localdf=mydf_t)
+  colnames(mydf_a) <- renameSample(metadata=metadata, localdf=mydf_a)
+  outcome <- list(genome=mydf_g, transcript=mydf_t, amplicon=mydf_a)
+  return (outcome)
+}
+```
+
+_Extract the count per datatype_  
+```{r}
+mf_slim <- separateDataType(mydf=mf_slim, metadata=metadata)
+mf_slim_g <- mf_slim$genome  
+mf_slim_t <- mf_slim$transcript
+mf_slim_a <- mf_slim$amplicon
+```
+
+_Give meaningful names to conditions as for the taxonomic case above_  
+```{r}
+colnames(cc_slim_g) <- renameSample(metadata=metadata, localdf=cc_slim_g)
+colnames(cc_slim_t) <- renameSample(metadata=metadata, localdf=cc_slim_t)
+colnames(cc_slim_a) <- renameSample(metadata=metadata, localdf=cc_slim_a)
+```
+
+Calculate the relative occurrence of cellular compartments per day of treatment for both metagenomic and transcriptomic data types.  
+```{r}
+mf_slim_metagenomics <- cc_slim_g %>% 
+                        gather(condition, count, 3:ncol(mf_slim_g)-1) %>%
+                        group_by( condition) %>% 
+                        mutate(prop=count/sum(count))
+
+mf_slim_metatransciptomics <- mf_slim_t %>% 
+                              gather(condition, count, 3:ncol(mf_slim_t)-1) %>%
+                              group_by( condition) %>%
+                              mutate(prop=count/sum(count))
+```
+
+
+Merge both metatranscriptomic and metagenomic relative occurrences of biological processes per condition to visualise the relative abundances of biological process terms that are dynamic during treatment.  
+```{r}
+mf_genomic_transcriptomics <- rbind(mf_slim_metagenomics, mf_slim_metatransciptomics)
+```
+
+_Barplot of relative abundance Molecular function_  
+```{r fig.pos="H"}
+mf_genomic_transcriptomics %>% arrange(desc(prop)) %>%
+        ggplot( aes(x=condition, y=prop,fill=description)) + 
+                geom_bar(stat='identity', position='fill', aes(fill = description)) +
+                facet_wrap(~DataType, ncol=1) +
+                ggtitle('Molecular function relative abundance through
+                      \n treatment per datatype') + 
+                      ylab('proportion abundance') + 
+                      theme_light()  +  
+                      theme(axis.text.x=element_text(angle=45, hjust=1)) +
+                      coord_flip() +  
+                     theme(legend.position="none")# + guides(fill=guide_legend(ncol=2)) 
+```
+
+_Heatmap of Absolute Molecular Function term counts through treatment_  
+```{r fig.pos="H"}
+mf_genomic_transcriptomics %>%  
+            ggplot( aes(x=condition,y=description))+
+  geom_tile(aes(fill=count)) + scale_fill_gradient(low="white", high="darkblue") + 
+  xlab("") + ylab("") + theme(axis.text.x=element_text(angle=45, hjust=1)) 
+
+```
+
+_Heat map of relative occurrence of molecular function term counts throughout treatment_  
+```{r fig.pos="H"}
+mf_genomic_transcriptomics %>%  
+            ggplot( aes(x=condition,y=description))+
+  geom_tile(aes(fill=prop)) + scale_fill_gradient(low="white", high="darkblue") + 
+  xlab("") + ylab("") + theme(axis.text.x=element_text(angle=45, hjust=1)) 
+
+```
+
+
+_What can you conclude from this plot?_  
+
+***  
+
+# 3. _**InterproScan**: relative occurence during treatment._  
+Extract the data from the data structure "results" created earlier and partition the extracted data per datatype  
+```{r}
+ipr <- tbl_df(results$IPR_abundances)
+ipr<- separateDataType(mydf=ipr, metadata=metadata)
+ipr_g <- ipr$genome  
+ipr_t <- ipr$transcript
+ipr_a <- ipr$amplicon
+```
+
+
+_Calculate the relative occurrence of IPR enrichment per day of treatment for both metagenomic and transcriptomic data types._  
+```{r}
+ipr_metagenomics <- ipr_g %>% gather(condition, count, 3:ncol(ipr_g)-1) %>%
+                    group_by( condition) %>%
+                    mutate(prop=count/sum(count))
+ipr_metatransciptomics <- ipr_t %>% gather(condition, count, 3:ncol(ipr_t)-1) %>%
+                          group_by( condition) %>%
+                          mutate(prop=count/sum(count))
+```
+
+Merge both metatranscriptomic and metagenomic relative occurrences of IPR per condition to visualise the relative abundance of IPR terms that are dynamic during treatment.  
+```{r}
+ipr_genomic_transcriptomics <- rbind(ipr_metagenomics, ipr_metatransciptomics)
+ipr_genomic_transcriptomics <- ipr_genomic_transcriptomics %>% 
+                                  mutate(description=as.character(description), count=log2(count+1))
+```
+
+_Bar plot of relative abundance of IPR_  
+```{r fig.pos="H"}
+ipr_genomic_transcriptomics %>% arrange(desc(prop)) %>%
+  ggplot( aes(x=condition, y=prop,fill=description)) +
+  geom_bar(stat='identity', position='fill', aes(fill = description)) +
+  facet_wrap(~DataType, ncol=1) +
+  ggtitle('IPR relative abundance through treatment\n  per datatype') + 
+  ylab('proportion abundance') +
+  theme_light()  + 
+  theme(axis.text.x=element_text(angle=45, hjust=1),
+        axis.text.y=element_blank()) +
+  coord_flip()  + 
+  theme(legend.position="none")
+```
+ 
+_Heat map of absolute InterproScan hit counts throughout treatment_  
+```{r fig.pos="H"}
+ipr_genomic_transcriptomics  %>% 
+            ggplot( aes(x=condition,y=description))+ facet_grid(~DataType) +
+  geom_tile(aes(fill=count)) + scale_fill_gradient(low="white", high="darkblue") + 
+  xlab("") + ylab("") + theme(axis.text.x=element_text(angle=45, hjust=1),
+                              axis.text.y=element_blank())
+```
+
+
+# 4. _**GO (all category)**: relative occurence during treatment._  
+The goal here is to create a composite plot of all GO category occurence during treatments.  
+```{r}
+GO <- tbl_df(results$GO_abundances)
+GO <- GO %>% mutate(description=as.character(description), category=as.character(category))
+
+GO_g <- GO  %>% 
+        select(matches("_G|description|category")) %>%
+        mutate(DataType="Metagenomics")
+GO_t <- GO  %>% select(matches("_T|description|category")) %>%
+        mutate(DataType="Metatranscriptomics") 
+GO_a <- GO  %>% select(matches("_A|description|category"))  %>% 
+        mutate(DataType="Amplicon")
+
+#Give meaningful names to conditions as for the taxonomic case above
+colnames(GO_g) <- renameSample(metadata=metadata, localdf=GO_g)
+colnames(GO_t) <- renameSample(metadata=metadata, localdf=GO_t)
+colnames(GO_a) <- renameSample(metadata=metadata, localdf=GO_a)
+```
+
+Transform the data from a wide format to a long format, making use of the tidyr package function gather, and compute the relative frequency of occurrence per days of treatment  
+```{r}
+GO_metagenomics <- GO_g %>% gather(condition, count, 4:ncol(GO_g)-1) %>%
+                  group_by( condition, category) %>% 
+                  mutate(prop=count/sum(count))
+GO_metatransciptomics <- GO_t %>% gather(condition, count, 4:ncol(GO_t)-1) %>%
+                         group_by( condition, category) %>%
+                         mutate(prop=count/sum(count))
+```
+
+Merge both metatranscriptomic and metagenomic relative occurrences of GO per condition to visualise the relative abundance of all GO category terms that are dynamic during treatment.  
+```{r}
+GO_genomic_transcriptomics <- rbind(GO_metagenomics, GO_metatransciptomics)
+```
+
+_Barplot of relative abundance of all GO terms_  
+```{r fig.pos="H"}
+GO_genomic_transcriptomics %>% arrange(desc(prop)) %>%
+  ggplot( aes(x=condition, y=prop,fill=description)) + 
+  geom_bar(stat='identity', position='fill', aes(fill = description)) +
+  facet_grid(category~DataType) +
+  ggtitle('Gene Ontology relative abundance through days \n  of treatment per datatype') + 
+  ylab('proportion abundance') +
+  theme_light()  +  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  coord_flip() +
+  theme(legend.position="none") #+ guides(fill=guide_legend(ncol=2)) 
+```
+
+
+# 5. Correspondance Analysisis of the contingency  tables.  
+The goal of this analysis is to elucidate the relationship between species and GO terms with respect to various treatment conditions (days).
+We will make use of the variable created above.  
+```{r}
+head(genomic_transcriptomics)
+taxonomy_long <-  genomic_transcriptomics %>%  ungroup() %>% 
+                  mutate(condition=paste(DataType, condition, sep="_")) %>%
+                  select(phylum, condition, count)
+head(taxonomy_long)
+taxonomy_wide <- spread(taxonomy_long, condition, count)
+rownames(taxonomy_wide) <- taxonomy_wide$Phylum
+taxonomy_wide
+taxonomy_wide.df <- select(taxonomy_wide, -phylum) %>%
+                       as.data.frame()
+```
+
+
+_Transpose the matrix for the purpose of plotting_  
+```{r}
+taxonomy<- t(taxonomy_wide.df)
+```
+
+_Define a main plot function to set up a plot for later use_  
+```{r}
+setup.plot <- ggplot() + coord_fixed() + 
+  labs(x="Comp1, Axis1", y="Comp2, Axis2") +
+  geom_hline(yintercept=0, col="darkgrey") + 
+  geom_vline(xintercept=0, col="darkgrey")
+
+# make the scree plot in a viewport
+myscree <- function(eigs, x=0.8, y=0.1, just=c("right","bottom")){
+  vp <- viewport(x=x, y=y, width=0.2, height=0.2, just=just)
+  mm <- data.frame(x=factor(1:length(eigs)), y=eigs)
+  sp <- ggplot(mm, aes(x=x, y=y)) + geom_bar(stat="identity") +
+        labs(x = NULL, y = NULL) + theme_light()  
+  print(sp, vp=vp)
+}
+```
+
+_Extract various datatype_  
+```{r}
+taxonomy.dna <- taxonomy_wide.df %>% select(matches('Metagenomics'))
+taxonomy.rna <- taxonomy_wide.df %>% select(matches('Metatranscriptomics'))
+taxonomy.dna<- t(taxonomy.dna)
+taxonomy.rna<- t(taxonomy.rna)
+```
+
+_Read in a file describing the data we loaded previously into R_  
+```{r}
+data.dna <- metadata[metadata$datatype=="Metagenomic"  & 
+                       !(metadata$datatype=="Amplicon_DNA"| metadata$datatype=="Amplicon_RNA"),]
+data.rna <- metadata[metadata$datatype=="Metatranscriptomic" & 
+                       !(metadata$datatype=="Amplicon_DNA"| metadata$datatype=="Amplicon_RNA"),]
+```
+
++ _Perform a Correspondance analysis on Metagenomic data_  
+```{r}
+taxonomy.coa <- dudi.coa(taxonomy.dna, scannf=F, nf=2)
+```
+  
++ _Plot the correspondence analysis with Ade4 native plotter_  
+```{r}
+scatter(taxonomy.coa)
+```
+
+The plot can be made more visually appealing and easier to interpret with ggplot2, making use of data computed for us by Ade4 (dudi.coa). These are in the object return by the dudi.coa function.  
+```{r fig.pos="H"}
+taxonomy.dna.plot<- setup.plot + geom_point(data=data.frame(taxonomy.coa$li, data.dna), 
+                       aes(x=Axis1, y=Axis2, col=days, shape=days, size=3)) +
+  geom_text(data=taxonomy.coa$co, 
+            aes(x=Comp1, y=Comp2, label=rownames(taxonomy.coa$co)),
+            position = "jitter", alpha=0.2) +
+  scale_size_area(breaks=c(0,3,6,11,14,40)) +
+  scale_shape(solid=F) +
+  labs(title="Correspondence Analysis: Metagenomics\nTaxonomy abundance") +  theme_light()  
+taxonomy.dna.plot
+myscree(taxonomy.coa$eig / sum(taxonomy.coa$eig))
+```
+
+5.1 _Perform a Correspondance analysis on the Metatranscriptomic data_ 
+```{r fig.pos="H"}
+taxonomy.coa <- dudi.coa(taxonomy.rna, scannf=F, nf=2)
+taxonomy.rna.plot <- setup.plot + geom_point(data=data.frame(taxonomy.coa$li, data.rna), 
+                 aes(x=Axis1, y=Axis2, col=days, shape=days, size=3)) +
+  geom_text(data=taxonomy.coa$co, 
+            aes(x=Comp1, y=Comp2, label=rownames(taxonomy.coa$co)),
+            position = "jitter", alpha=0.2) +
+  scale_size_area(breaks=c(0,3,6,11,14,40)) +
+  scale_shape(solid=F) +
+  labs(title="Correspondence Analysis: Metatranscriptomic\nTaxonomy abundance") +
+  theme_light()  
+taxonomy.rna.plot
+myscree(taxonomy.coa$eig / sum(taxonomy.coa$eig))
+```
+
+_What can you conclude despite the very sparse data?_  
+
+***  
+
+Merge taxonomic and GO_slim_abundances for correspondence analysis.
+Organise the taxonomy data  
+```{r}
+taxonomy <- tbl_df(results$phylum_taxonomy_abundances) %>% select(-kingdom)
+phylum <- taxonomy$phylum
+taxonomy <- taxonomy %>% select(-phylum) %>% t()
+colnames(taxonomy) <- phylum
+taxonomy <- taxonomy[!grepl('_A$',rownames(taxonomy)),]
+```
+
++ _Organise the ontologies data_  
+```{r}
+ontology.meta <- tbl_df(results$GO_slim_abundances) %>%select(GO,description, category)
+```
+
++ _Organise the Biological processes data_  
+```{r}
+go.bp <- tbl_df(results$BP_GO_slim_abundances) %>%select(-GO, -category)
+description.go <- go.bp$description
+go.bp <- go.bp %>% select(-description) %>% t()
+colnames(go.bp) <- description.go
+```
+
++ _Organise the Molecular function data_  
+```{r}
+go.mf <- tbl_df(results$MF_GO_slim_abundances) %>%select(-GO, -category)
+description.go <- go.mf$description
+go.mf <- go.mf %>% select(-description) %>% t()
+colnames(go.mf) <- description.go
+```
+
++ _Organise the Cellular compartment data_  
+```{r}
+go.cc <- tbl_df(results$CC_GO_slim_abundances) %>%select(-GO, -category)
+description.go <- go.cc$description
+go.cc <- go.cc %>% select(-description) %>% t()
+colnames(go.cc) <- description.go
+```
+
++ _Organise the IPR data_  
+```{r}
+ipr <- tbl_df(results$IPR_abundances) %>% select(-IPR)
+description.ipr <- ipr$description
+ipr <- ipr %>% select(-description) %>% t()
+colnames(ipr) <- description.ipr
+```
+
++ _read in the annotation material_  
+```{r}
+metainfo <- metadata
+```
+
+
++ _Filter out the amplicons data_  
+```{r}
+metainfo <- metainfo %>% filter(!grepl('_A$', id))
+metainfo 
+```    
+
++ _Merge the Taxonomy and Molecular Functions and perform Correspondence Analysis (CA) on the merge set_
+```{r}
+
+mydf <- cbind(taxonomy, go.mf)
+mydf <- mydf[rownames(mydf) %in% metainfo$id,]
+```
++ _Call on dudi.coa function from Ade4 package to perform CA_  
+```{r}
+mydf.coa <- dudi.coa(mydf, scannf=F, nf=2)
+```
++ _Visualize the CA analysis with ggplot2_  
+```{r fig.pos="H"}
+mydf.plot<- setup.plot + 
+  geom_point(data=data.frame(mydf.coa$li, metainfo), 
+                aes(x=Axis1, y=Axis2, col=days, shape=datatype, size=3)) +
+  geom_text(data=mydf.coa$co, aes(x=Comp1, y=Comp2, label=rownames(mydf.coa$co)), 
+            position = "jitter", alpha=.1) +
+  scale_size_area(breaks=c(0,3,6,11,14,40)) +
+  scale_shape(solid=T) +
+  labs(title="Correspondence Analysis: Metagenomics\n
+       Taxonomy and Molecular Function abundance") +  
+  theme_light()  
+print(mydf.plot)
+myscree(mydf.coa$eig / sum(mydf.coa$eig))
+```
+_What can you conclude from this analysis?_  
+
+***  
+
+5.2 _Merge Taxonomy and Biological processess and perform Correspondence Analysis (CA) on the merge set_  
+```{r}
+mydf <- cbind(taxonomy, go.bp)
+mydf <- mydf[rownames(mydf) %in% metainfo$id,]
+mydf.coa <- dudi.coa(mydf, scannf=F, nf=2)
+```
++ _Visualize the CA analysis with ggplot2_  
+```{r fig.pos="H"}
+mydf.plot<- setup.plot + 
+  geom_point(data=data.frame(mydf.coa$li, metainfo), 
+            aes(x=Axis1, y=Axis2, col=days, shape=datatype, size=3)) +
+  geom_text(data=mydf.coa$co, aes(x=Comp1, y=Comp2, label=rownames(mydf.coa$co)),
+            position = "jitter", alpha=.1) +
+  scale_size_area(breaks=c(0,3,6,11,14,40)) +
+  scale_shape(solid=F) +
+  labs(title="Correspondence Analysis: Metagenomics\n
+       Taxonomy and Biological Processess  abundance") + 
+  theme_light()  
+print(mydf.plot)
+myscree(mydf.coa$eig / sum(mydf.coa$eig))
+```
+_What can you conclude from this analysis?_  
+
+***  
+
++ 5.3 _Merge Taxonomy and Cellular Compartment and perform Correspondence Analysis (CA) on the merge set_  
+
+```{r}
+mydf <- cbind(taxonomy, go.cc)
+mydf <- mydf[rownames(mydf) %in% metainfo$id,]
+mydf.coa <- dudi.coa(mydf, scannf=F, nf=2)
+```
++ _Visualize the CA analysis with ggplot2_  
+```{r fig.pos="H"}
+mydf.plot<- setup.plot + 
+  geom_point(data=data.frame(mydf.coa$li, metainfo), 
+    aes(x=Axis1, y=Axis2, col=days, shape=datatype, size=3)) +
+  geom_text(data=mydf.coa$co, aes(x=Comp1, y=Comp2, label=rownames(mydf.coa$co)), 
+            position = "jitter", alpha=.1) +
+  scale_size_area(breaks=c(0,3,6,11,14,40)) +
+  scale_shape(solid=T) +
+  labs(title="Correspondence Analysis: Metagenomics\n
+       Taxonomy and Cellular Compartment abundance") +  
+  theme_light()  
+print(mydf.plot)
+myscree(mydf.coa$eig / sum(mydf.coa$eig))
+```
+_What can you conclude from this analysis?_
+
+***  
+
++ 5.4 _Merge Taxonomy, Cellular Compartments and Molecular functions then perform Correspondence Analysis (CA) on the merge set_
+
+Merging Taxonomy and Cellular compartment and Molecular function 
+```{r}
+mydf <- cbind(taxonomy, go.cc, go.mf)
+mydf <- mydf[rownames(mydf) %in% metainfo$id,]
+mydf.coa <- dudi.coa(mydf, scannf=F, nf=2)
+```
++ _Visualize the CA analysis with ggplot2_  
+
+```{r fig.pos="H"}
+mydf.plot<- setup.plot + 
+  geom_point(data=data.frame(mydf.coa$li, metainfo), 
+          aes(x=Axis1, y=Axis2, col=days, shape=datatype, size=3)) + 
+           geom_density2d(colour = "red") +
+      geom_text(data=mydf.coa$co, aes(x=Comp1, y=Comp2, label=rownames(mydf.coa$co)), 
+            position = "jitter", alpha=.2) +
+      scale_size_area(breaks=c(0,3,6,11,14,40)) + 
+      scale_shape(solid=T) +
+      labs(title="Correspondence Analysis: Metagenomics\n
+           Taxonomy, Cellular Compartment and Molecular Function abundance") +
+      theme_light()  
+print(mydf.plot)
+myscree(mydf.coa$eig / sum(mydf.coa$eig))
+```
+_What can you conclude from this analysis?_  
+
+***  
+
+# 6. Clustering of the Principal Component 
+```{r}
+compositedata <- as.data.frame(mydf)
+rownames(compositedata) <- paste(metainfo$days, metainfo$genomictype, sep="_" )
+```
++ Remove columns that only contain zero as they are not contributing to the creation of the component when using FactoMineR  
+
+```{r}
+compositedata<- compositedata[, which(!apply(compositedata,2,FUN=function(x){all(x==0)}))]
+```
++ Perform a correspondence analysis using FactoMineR. This automatically generates a perceptual map, showing the relationship between GO terms, species, and days of treatment and various datatypes.  
+```{r fig.pos="H"}
+ca.analysis <- CA(compositedata)
+```
++ Perform a hierarchical clustering of the principal component created above to see the relationship between days of experiment and datatypes.  
+```{r}
+clustering<- HCPC(ca.analysis, nb.clust=-1, order=TRUE)
+```
+
+```{r}
+plot(clustering)
+```
+
+_What do you conclude from this graph?_  
+
+***  
+
++ 6.1 To find out the relationship between annotations(BP,CC), species we transpose the above table prior to performing a CA.  
+```{r}
+annoSpecies <- as.data.frame(t(compositedata))
+rownames(annoSpecies) <- rownames(t(compositedata))
+```
++ _CA_  
+```{r fig.pos="H"}
+anno.ca.analysis <- CA(annoSpecies)
+```
+
++ Perform a hierarchical clustering of the following principal component created above to see the relationship between species and annotation.  
+```{r fig.pos="H"}
+anno.clustering<- HCPC(anno.ca.analysis, nb.clust=-1, order=TRUE)
+```
+
+```{r fig.pos="H"}
+plot(anno.clustering)
+```
+
+
+_What can you conclude from this clustering?_  
+
+***  
+
+_**APPENDIX**_
+
+_To reproduce this hands on session, your R sessionInfo() must be identical to the following:_
+
+```{r}
+sessionInfo()
+```

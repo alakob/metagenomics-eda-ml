@@ -1,0 +1,5 @@
+```{r }
+dependencies <- c('stringr', 'ade4','ggplot2','grid','dyplyr','tidyr','FactoMineR', 'factoextra')
+system("sudo apt-get install  texlive texstudio texlive-latex-extra --yes")
+suppressMessages(install.packages(dependencies, dependencies=TRUE, repos='http://cran.rstudio.com/'))
+```
